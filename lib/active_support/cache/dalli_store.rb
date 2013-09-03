@@ -56,38 +56,6 @@ module ActiveSupport
         @data
       end
 
-      #def fetch(name, options=nil)
-      #  options ||= {}
-      #  name = expanded_key name
-      #
-      #  if block_given?
-      #    unless options[:force]
-      #      entry = instrument(:read, name, options) do |payload|
-      #        read_entry(name, options).tap do |result|
-      #          if payload
-      #            payload[:super_operation] = :fetch
-      #            payload[:hit] = !!result
-      #          end
-      #        end
-      #      end
-      #    end
-      #
-      #    if !entry.nil?
-      #      instrument(:fetch_hit, name, options) { |payload| }
-      #      entry
-      #    else
-      #      result = instrument(:generate, name, options) do |payload|
-      #        yield
-      #      end
-      #      write(name, result, options)
-      #      result
-      #    end
-      #  else
-      #    read(name, options)
-      #  end
-      #end
-
-
       def fetch(name, options=nil)
         options ||= {}
         name = expanded_key name
@@ -104,8 +72,7 @@ module ActiveSupport
             end
           end
 
-          # Race condition support
-          if options[:race_condition_ttl].present? && entry.is_a?(ActiveSupport::Cache::Entry) && entry.expired?
+          if has_race_condition_support?(entry, options) && entry.expired?
             race_ttl = options[:race_condition_ttl].to_f
             if race_ttl && Time.now.to_f - entry.expires_at <= race_ttl
               entry.expires_at = Time.now + race_ttl
@@ -344,6 +311,11 @@ module ActiveSupport
       def log(operation, key, options=nil)
         return unless logger && logger.debug? && !silence?
         logger.debug("Cache #{operation}: #{key}#{options.blank? ? "" : " (#{options.inspect})"}")
+      end
+
+      def has_race_condition_support?(data, options)
+        race_ttl = options[:race_condition_ttl]
+        data.is_a?(ActiveSupport::Cache::Entry) && race_ttl.present? && race_ttl.to_f > 0
       end
 
       def cache_value_from(entry)
