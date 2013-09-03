@@ -72,7 +72,7 @@ module ActiveSupport
             end
           end
 
-          if has_race_condition_support?(entry, options) && entry.expired?
+          if race_condition_support?(options) && entry.is_a?(ActiveSupport::Cache::Entry) && entry.expired?
             race_ttl = options[:race_condition_ttl].to_f
             if race_ttl && Time.now.to_f - entry.expires_at <= race_ttl
               entry.expires_at = Time.now + race_ttl
@@ -239,7 +239,7 @@ module ActiveSupport
       def read_entry(key, options) # :nodoc:
         entry = @data.get(key, options)
         # NB Backwards data compatibility, to be removed at some point
-        options[:race_condition_ttl].present? ? entry : cache_value_from(entry)
+        race_condition_support?(options) ? entry : cache_value_from(entry)
       rescue Dalli::DalliError => e
         logger.error("DalliError: #{e.message}") if logger
         raise if @raise_errors
@@ -253,7 +253,7 @@ module ActiveSupport
 
         method     = options[:unless_exist] ? :add : :set
         expires_in = options[:expires_in]
-        data       = if options[:race_condition_ttl].present?
+        data       = if race_condition_support?(options)
                        value.is_a?(ActiveSupport::Cache::Entry) ? value : ActiveSupport::Cache::Entry.new(value, options)
                      else
                        value
@@ -313,9 +313,8 @@ module ActiveSupport
         logger.debug("Cache #{operation}: #{key}#{options.blank? ? "" : " (#{options.inspect})"}")
       end
 
-      def has_race_condition_support?(data, options)
-        race_ttl = options[:race_condition_ttl]
-        data.is_a?(ActiveSupport::Cache::Entry) && race_ttl.present? && race_ttl.to_f > 0
+      def race_condition_support?(options)
+        options[:race_condition_ttl].present? && options[:race_condition_ttl].to_f > 0
       end
 
       def cache_value_from(entry)
