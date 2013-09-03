@@ -56,6 +56,38 @@ module ActiveSupport
         @data
       end
 
+      #def fetch(name, options=nil)
+      #  options ||= {}
+      #  name = expanded_key name
+      #
+      #  if block_given?
+      #    unless options[:force]
+      #      entry = instrument(:read, name, options) do |payload|
+      #        read_entry(name, options).tap do |result|
+      #          if payload
+      #            payload[:super_operation] = :fetch
+      #            payload[:hit] = !!result
+      #          end
+      #        end
+      #      end
+      #    end
+      #
+      #    if !entry.nil?
+      #      instrument(:fetch_hit, name, options) { |payload| }
+      #      entry
+      #    else
+      #      result = instrument(:generate, name, options) do |payload|
+      #        yield
+      #      end
+      #      write(name, result, options)
+      #      result
+      #    end
+      #  else
+      #    read(name, options)
+      #  end
+      #end
+
+
       def fetch(name, options=nil)
         options ||= {}
         name = expanded_key name
@@ -72,9 +104,21 @@ module ActiveSupport
             end
           end
 
+          # Race condition support
+          if options[:race_condition_ttl].present? && entry.is_a?(ActiveSupport::Cache::Entry) && entry.expired?
+            race_ttl = options[:race_condition_ttl].to_f
+            if race_ttl && Time.now.to_f - entry.expires_at <= race_ttl
+              entry.expires_at = Time.now + race_ttl
+              write_entry(name, entry, expires_in: race_ttl * 2)
+            else
+              delete_entry(name, options)
+            end
+            entry = nil
+          end
+
           if !entry.nil?
             instrument(:fetch_hit, name, options) { |payload| }
-            entry
+            cache_value_from(entry)
           else
             result = instrument(:generate, name, options) do |payload|
               yield
@@ -143,7 +187,7 @@ module ActiveSupport
           results.inject({}) do |memo, (inner, _)|
             entry = results[inner]
             # NB Backwards data compatibility, to be removed at some point
-            value = (entry.is_a?(ActiveSupport::Cache::Entry) ? entry.value : entry)
+            value = cache_value_from(entry)
             memo[mapping[inner]] = value
             local_cache.write_entry(inner, value, options) if local_cache
             memo
@@ -228,7 +272,7 @@ module ActiveSupport
       def read_entry(key, options) # :nodoc:
         entry = @data.get(key, options)
         # NB Backwards data compatibility, to be removed at some point
-        entry.is_a?(ActiveSupport::Cache::Entry) ? entry.value : entry
+        options[:race_condition_ttl].present? ? entry : cache_value_from(entry)
       rescue Dalli::DalliError => e
         logger.error("DalliError: #{e.message}") if logger
         raise if @raise_errors
@@ -239,9 +283,15 @@ module ActiveSupport
       def write_entry(key, value, options) # :nodoc:
         # cleanup LocalCache
         cleanup if options[:unless_exist]
-        method = options[:unless_exist] ? :add : :set
+
+        method     = options[:unless_exist] ? :add : :set
         expires_in = options[:expires_in]
-        @data.send(method, key, value, expires_in, options)
+        data       = if options[:race_condition_ttl].present?
+                       value.is_a?(ActiveSupport::Cache::Entry) ? value : ActiveSupport::Cache::Entry.new(value, options)
+                     else
+                       value
+                     end
+        @data.send(method, key, data, expires_in, options)
       rescue Dalli::DalliError => e
         logger.error("DalliError: #{e.message}") if logger
         raise if @raise_errors
@@ -296,6 +346,9 @@ module ActiveSupport
         logger.debug("Cache #{operation}: #{key}#{options.blank? ? "" : " (#{options.inspect})"}")
       end
 
+      def cache_value_from(entry)
+        entry.is_a?(ActiveSupport::Cache::Entry) ? entry.value : entry
+      end
     end
   end
 end
